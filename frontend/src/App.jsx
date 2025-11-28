@@ -1,79 +1,113 @@
-import { useEffect, useState } from "react";
+import { useState, useEffect } from 'react'
 
-export default function App() {
-  const [apiStatus, setApiStatus] = useState(null);
-  const [loading, setLoading] = useState(true);
+function App() {
+  const [tests, setTests] = useState([
+    { name: 'Backend Server', url: 'http://localhost:8000/', status: 'pending' },
+    { name: 'Health Check', url: 'http://localhost:8000/api/health', status: 'pending' },
+    { name: 'Stats', url: 'http://localhost:8000/api/stats', status: 'pending' },
+  ])
 
   useEffect(() => {
-    fetch("http://localhost:8000/api/health")
-      .then((res) => res.json())
-      .then((data) => setApiStatus(data))
-      .catch((err) => setApiStatus({ error: String(err) }))
-      .finally(() => setLoading(false));
-  }, []);
+    runTests()
+  }, [])
+
+  const runTests = async () => {
+    for (let i = 0; i < tests.length; i++) {
+      try {
+        const response = await fetch(tests[i].url)
+        const data = await response.json()
+        
+        setTests(prev => prev.map((test, idx) => 
+          idx === i ? { ...test, status: 'success', data } : test
+        ))
+      } catch (error) {
+        setTests(prev => prev.map((test, idx) => 
+          idx === i ? { ...test, status: 'error', error: error.message } : test
+        ))
+      }
+    }
+  }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-50">
-      <header className="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
-        <h1 className="text-xl font-semibold tracking-tight">
-          Healthcare Platform
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
+      <div className="max-w-4xl mx-auto">
+        <h1 className="text-4xl font-bold text-gray-900 mb-8 text-center">
+          🏥 Backend Connection Test
         </h1>
-        <span className="text-xs text-slate-400">
-          React + Tailwind 4 + Flask + PostgreSQL
-        </span>
-      </header>
 
-      <main className="p-6 space-y-6">
-        <section className="grid gap-4 md:grid-cols-3">
-          <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-            <p className="text-xs font-medium text-slate-400">API Status</p>
-            <p className="mt-2 text-lg font-semibold">
-              {loading
-                ? "Checking..."
-                : apiStatus?.status === "healthy" || apiStatus?.status === "ok"
-                ? "Connected"
-                : "Error"}
-            </p>
-            <p className="mt-1 text-xs text-slate-400">
-              /api/health from Flask backend
-            </p>
-          </div>
+        <div className="space-y-4">
+          {tests.map((test, index) => (
+            <div
+              key={index}
+              className={`bg-white rounded-lg shadow-md p-6 border-2 ${
+                test.status === 'success' ? 'border-green-400' :
+                test.status === 'error' ? 'border-red-400' :
+                'border-yellow-400'
+              }`}
+            >
+              <div className="flex items-center gap-3 mb-3">
+                <span className="text-2xl">
+                  {test.status === 'success' ? '✅' :
+                   test.status === 'error' ? '❌' : '⏳'}
+                </span>
+                <h3 className="text-xl font-semibold">{test.name}</h3>
+              </div>
 
-          <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-            <p className="text-xs font-medium text-slate-400">Facilities</p>
-            <p className="mt-2 text-lg font-semibold">Coming soon</p>
-            <p className="mt-1 text-xs text-slate-400">
-              Multi-tenant hospitals, clinics, labs, etc.
-            </p>
-          </div>
+              <p className="text-sm text-gray-600 mb-2">
+                <span className="font-medium">URL: </span>
+                <span className="bg-gray-100 px-2 py-1 rounded text-xs font-mono">
+                  {test.url}
+                </span>
+              </p>
 
-          <div className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-            <p className="text-xs font-medium text-slate-400">
-              Commission Engine
-            </p>
-            <p className="mt-2 text-lg font-semibold">Design Ready</p>
-            <p className="mt-1 text-xs text-slate-400">
-              Online + cash settlements with RLS.
-            </p>
-          </div>
-        </section>
+              {test.status === 'success' && (
+                <div className="mt-3">
+                  <p className="text-sm font-medium text-gray-700 mb-1">Response:</p>
+                  <pre className="bg-gray-50 p-3 rounded text-xs overflow-auto max-h-40 font-mono">
+                    {JSON.stringify(test.data, null, 2)}
+                  </pre>
+                </div>
+              )}
 
-        <section className="rounded-xl border border-slate-800 bg-slate-900/60 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="text-sm font-semibold tracking-tight">
-              Raw /api/health response
-            </h2>
-            <span className="text-[10px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-300">
-              Debug
-            </span>
+              {test.status === 'error' && (
+                <div className="mt-3">
+                  <p className="text-sm font-medium text-red-700 mb-1">Error:</p>
+                  <p className="text-sm text-red-600">{test.error}</p>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-8 text-center">
+          <button
+            onClick={runTests}
+            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors font-medium shadow-md"
+          >
+            🔄 Run Tests Again
+          </button>
+        </div>
+
+        <div className="mt-8 bg-white rounded-lg shadow-md p-6">
+          <h3 className="text-lg font-semibold mb-4">📡 Connection Info</h3>
+          <div className="grid grid-cols-2 gap-4 text-sm">
+            <div>
+              <p className="text-gray-600">Backend URL:</p>
+              <div className="mt-1 bg-gray-100 px-3 py-2 rounded font-mono text-xs">
+                http://localhost:8000
+              </div>
+            </div>
+            <div>
+              <p className="text-gray-600">Frontend URL:</p>
+              <div className="mt-1 bg-gray-100 px-3 py-2 rounded font-mono text-xs">
+                {window.location.origin}
+              </div>
+            </div>
           </div>
-          <pre className="text-xs whitespace-pre-wrap break-all bg-slate-950/70 rounded-lg p-3 border border-slate-800 overflow-x-auto">
-            {loading
-              ? "Loading..."
-              : JSON.stringify(apiStatus, null, 2) || "No data"}
-          </pre>
-        </section>
-      </main>
+        </div>
+      </div>
     </div>
-  );
+  )
 }
+
+export default App

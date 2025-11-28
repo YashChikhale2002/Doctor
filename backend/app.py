@@ -1,187 +1,375 @@
+# =====================================================================
+# HEALTHCARE PLATFORM API - React + Vite Frontend
+# Pure REST API Backend with JWT Authentication
+# =====================================================================
+
+import os
+import logging
+from datetime import datetime
+
 from flask import Flask, jsonify, request
 from flask_sqlalchemy import SQLAlchemy
-from flask_jwt_extended import (
-    JWTManager, create_access_token,
-    jwt_required, get_jwt_identity
-)
+from flask_jwt_extended import JWTManager
 from flask_cors import CORS
 from dotenv import load_dotenv
-import os
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from datetime import datetime
-from decimal import Decimal
-from sqlalchemy import text
+from sqlalchemy import text, inspect
 
-# ---------------------------------
-# Load env & basic config
-# ---------------------------------
+# Load environment
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(os.path.join(BASE_DIR, ".env"))
 
-app = Flask(__name__)
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
-# Allow React dev server
-CORS(app, resources={r"/*": {"origins": ["http://localhost:5173"]}})
+# =====================================================================
+# IMPORT ROUTES
+# =====================================================================
 
-raw_url = os.getenv("DATABASE_URL")
-if not raw_url:
-    raw_url = "postgresql+psycopg2://app_user:secure123@localhost:5432/healthcare"
-
-app.config["SQLALCHEMY_DATABASE_URI"] = raw_url
-app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
-app.config["JWT_SECRET_KEY"] = os.getenv("JWT_SECRET_KEY", "dev-secret-change-me")
-
-print("RAW DATABASE_URL           ->", repr(os.getenv("DATABASE_URL")))
-print("SQLALCHEMY_DATABASE_URI    ->", repr(app.config["SQLALCHEMY_DATABASE_URI"]))
-
-db = SQLAlchemy(app)
-jwt = JWTManager(app)
-
-# ---------------------------------
-# Helper: direct PG connection (for raw SQL/RLS tests)
-# ---------------------------------
-def get_db():
-    return psycopg2.connect(
-        host=os.getenv("DB_HOST", "localhost"),
-        database=os.getenv("DB_NAME", "healthcare"),
-        user=os.getenv("DB_USER", "app_user"),
-        password=os.getenv("DB_PASSWORD", "secure123"),
-        port=os.getenv("DB_PORT", "5432"),
-        cursor_factory=RealDictCursor,
-    )
+from routes.health_routes import health_bp
 
 
-def set_rls_context(conn, tenant_id, user_id):
-    """Set PostgreSQL RLS context (if functions exist)."""
-    cur = conn.cursor()
-    try:
-        cur.execute("SELECT app.set_current_tenant(%s)", (tenant_id,))
-        cur.execute("SELECT app.set_current_user(%s)", (user_id,))
-        conn.commit()
-    except Exception:
-        conn.rollback()
-    finally:
-        cur.close()
+from models import db
 
-# ---------------------------------
-# Simple SQLAlchemy model (just to test ORM)
-# ---------------------------------
-class Facility(db.Model):
-    __tablename__ = "facilities"
-    __table_args__ = {"schema": "app"}
+# =====================================================================
+# CREATE APPLICATION
+# =====================================================================
 
-    id = db.Column(db.Uuid, primary_key=True)
-    tenant_id = db.Column(db.Uuid, nullable=False)
-    name = db.Column(db.String(255), nullable=False)
-    facility_type = db.Column(db.String(50), nullable=False)
-    status = db.Column(db.String(20), nullable=False)
-
-    def to_dict(self):
-        return {
-            "id": str(self.id),
-            "tenant_id": str(self.tenant_id),
-            "name": self.name,
-            "facility_type": self.facility_type,
-            "status": self.status,
-        }
-
-# ---------------------------------
-# Basic test routes
-# ---------------------------------
-@app.route("/api/health")
-def health():
-    """Basic health check hitting PostgreSQL."""
-    try:
-        conn = get_db()
-        cur = conn.cursor()
-        cur.execute("SELECT version();")
-        row = cur.fetchone()
-        version = row["version"] if isinstance(row, dict) else row[0]
-        cur.close()
-        conn.close()
-
-        return jsonify(
-            {
-                "status": "healthy",
-                "database": "PostgreSQL 16",
-                "version": version,
-                "time": datetime.now().isoformat(),
-            }
+def create_app(config_name='development'):
+    """Create Flask API application"""
+    
+    app = Flask(__name__)
+    
+    # =====================================================================
+    # CONFIGURATION
+    # =====================================================================
+    
+    if config_name == 'production':
+        app.config['DEBUG'] = False
+        app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+            'DATABASE_URL',
+            'postgresql+psycopg2://app_user:secure123@localhost:5432/healthcare'
         )
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+    else:
+        app.config['DEBUG'] = True
+        app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get(
+            'DATABASE_URL',
+            'postgresql+psycopg2://app_user:secure123@localhost:5432/healthcare'
+        )
+    
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    app.config['SQLALCHEMY_ECHO'] = False
+    app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', 'dev-secret-key')
+    app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY', 'jwt-secret-key')
+    app.config['JWT_ACCESS_TOKEN_EXPIRES'] = 86400  # 24 hours
+    
+    # =====================================================================
+    # INITIALIZE EXTENSIONS
+    # =====================================================================
+    
+    db.init_app(app)
+    jwt = JWTManager(app)
+    
+    # CORS configuration for React frontend
+    CORS(app, resources={
+        r"/*": { 
+            "origins": [
+                "http://localhost:5173",  # Vite dev server
+                "http://localhost:3000",   # Alternative React port
+                "http://localhost:5174",   # Alternative Vite port
+                os.environ.get('FRONTEND_URL', 'http://localhost:5173')
+            ],
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "expose_headers": ["Content-Type", "Authorization"],
+            "supports_credentials": True,
+            "max_age": 3600
+        }
+    })
+    
+    logger.info(f"📊 Database: {app.config['SQLALCHEMY_DATABASE_URI']}")
+    
+    # =====================================================================
+    # REGISTER API BLUEPRINTS
+    # =====================================================================
+    
+    logger.info("📡 Registering API Blueprints...")
+    app.register_blueprint(health_bp)
 
-# ---------------------------------
-# Auth routes (dummy)
-# ---------------------------------
-@app.route("/api/auth/login", methods=["POST"])
-def login():
-    """Dummy login that always returns a token (replace later)."""
-    data = request.get_json() or {}
-    email = data.get("email")
-    password = data.get("password")
+    
+    # =====================================================================
+    # ROOT ENDPOINT
+    # =====================================================================
+    
+    @app.route('/')
+    def index():
+        """API root endpoint"""
+        return jsonify({
+            "message": "Healthcare Platform API",
+            "version": "1.0.0",
+            "status": "running",
+            "documentation": "/api/docs",
+            "endpoints": {
+                "health": "/api/health",
+                "auth": {
+                    "login": "/api/auth/login",
+                    "me": "/api/auth/me",
+                    "refresh": "/api/auth/refresh"
+                },
+                "facilities": "/api/facilities",
+                "patients": "/api/patients",
+                "billing": "/api/billing",
+                "analytics": "/api/analytics"
+            }
+        }), 200
+    
+    # =====================================================================
+    # ERROR HANDLERS
+    # =====================================================================
+    
+    @app.errorhandler(404)
+    def not_found(error):
+        return jsonify({
+            'error': 'Not found',
+            'message': 'The requested resource was not found',
+            'status': 404
+        }), 404
+    
+    @app.errorhandler(403)
+    def forbidden(error):
+        return jsonify({
+            'error': 'Forbidden',
+            'message': 'You do not have permission to access this resource',
+            'status': 403
+        }), 403
+    
+    @app.errorhandler(500)
+    def internal_error(error):
+        db.session.rollback()
+        logger.error(f"Internal error: {error}")
+        return jsonify({
+            'error': 'Internal server error',
+            'message': 'An unexpected error occurred',
+            'status': 500
+        }), 500
+    
+    @app.errorhandler(400)
+    def bad_request(error):
+        return jsonify({
+            'error': 'Bad request',
+            'message': 'The request was invalid or malformed',
+            'status': 400
+        }), 400
+    
+    # =====================================================================
+    # JWT ERROR HANDLERS
+    # =====================================================================
+    
+    @jwt.expired_token_loader
+    def expired_token_callback(jwt_header, jwt_payload):
+        return jsonify({
+            'error': 'Token expired',
+            'message': 'The authentication token has expired',
+            'status': 401
+        }), 401
+    
+    @jwt.invalid_token_loader
+    def invalid_token_callback(error):
+        return jsonify({
+            'error': 'Invalid token',
+            'message': 'The authentication token is invalid',
+            'status': 401
+        }), 401
+    
+    @jwt.unauthorized_loader
+    def unauthorized_callback(error):
+        return jsonify({
+            'error': 'Unauthorized',
+            'message': 'Authentication token is missing',
+            'status': 401
+        }), 401
+    
+    # =====================================================================
+    # REQUEST/RESPONSE MIDDLEWARE
+    # =====================================================================
+    
+    @app.before_request
+    def log_request():
+        """Log all requests"""
+        logger.info(f"{request.method} {request.path}")
+    
+    @app.after_request
+    def after_request(response):
+        """Add security headers"""
+        response.headers['X-Content-Type-Options'] = 'nosniff'
+        response.headers['X-Frame-Options'] = 'DENY'
+        response.headers['X-XSS-Protection'] = '1; mode=block'
+        return response
+    
+    return app
 
-    if not email or not password:
-        return jsonify({"error": "email and password required"}), 400
+# =====================================================================
+# DATABASE MIGRATION
+# =====================================================================
 
-    identity = {
-        "user_id": "00000000-0000-0000-0000-000000000001",
-        "tenant_id": "00000000-0000-0000-0000-000000000001",
-        "facility_id": None,
-        "email": email,
-        "role": "super_admin" if "admin" in email else "facility_admin",
-    }
-    access_token = create_access_token(identity=identity)
-    return jsonify({"access_token": access_token, "user": identity})
-
-@app.route("/api/auth/me", methods=["GET"])
-@jwt_required()
-def me():
-    """Return current JWT identity."""
-    current = get_jwt_identity()
-    return jsonify({"user": current})
-
-# ---------------------------------
-# Facilities routes
-# ---------------------------------
-@app.route("/api/facilities/orm", methods=["GET"])
-@jwt_required()
-def list_facilities_orm():
-    """List facilities via SQLAlchemy ORM."""
-    facilities = Facility.query.limit(50).all()
-    return jsonify([f.to_dict() for f in facilities])
-
-@app.route("/api/facilities/raw", methods=["GET"])
-@jwt_required()
-def list_facilities_raw():
-    """List facilities via raw SQL (tests RLS + direct psycopg2)."""
-    current = get_jwt_identity()
-    conn = get_db()
-    set_rls_context(conn, current["tenant_id"], current["user_id"])
-    cur = conn.cursor()
-    cur.execute(
-        """
-        SELECT id, tenant_id, name, facility_type, status
-        FROM app.facilities
-        ORDER BY name
-        LIMIT 50;
-        """
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return jsonify(rows)
-
-# ---------------------------------
-# Entry point
-# ---------------------------------
-if __name__ == "__main__":
+def migrate_database(app):
+    """Initialize database with schemas and extensions"""
     with app.app_context():
-        # Ensure app schema exists for our model
-        db.session.execute(text("CREATE SCHEMA IF NOT EXISTS app;"))
-        db.session.commit()
-        db.create_all()
+        try:
+            logger.info("🔧 Starting database migration...")
+            
+            # Create schemas
+            logger.info("📁 Creating schemas...")
+            schemas = ["app", "billing", "settlement", "audit", "analytics"]
+            for schema in schemas:
+                db.session.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema};"))
+            db.session.commit()
+            logger.info("   ✅ Schemas created")
+            
+            # Create extensions
+            logger.info("🔌 Installing extensions...")
+            extensions = ["uuid-ossp", "pgcrypto", "pg_trgm", "btree_gin"]
+            for ext in extensions:
+                db.session.execute(text(f'CREATE EXTENSION IF NOT EXISTS "{ext}";'))
+            db.session.commit()
+            logger.info("   ✅ Extensions installed")
+            
+            # Create tables
+            logger.info("📊 Creating tables from models...")
+            db.create_all()
+            logger.info("   ✅ All tables created")
+            
+            # Verify
+            inspector = inspect(db.engine)
+            for schema in ["app", "billing", "settlement"]:
+                tables = inspector.get_table_names(schema=schema)
+                logger.info(f"   📋 {schema} schema: {len(tables)} tables")
+            
+            logger.info("\n✅ Database migration completed!\n")
+            return True
+            
+        except Exception as e:
+            logger.error(f"\n❌ Migration failed: {str(e)}\n")
+            db.session.rollback()
+            return False
 
-    print("🚀 Flask backend starting on http://localhost:8000")
-    app.run(debug=True, port=8000, host="0.0.0.0")
+# =====================================================================
+# CLI COMMANDS
+# =====================================================================
+
+def register_cli_commands(app):
+    """Register Flask CLI commands"""
+    
+    @app.cli.command()
+    def init_db():
+        """Initialize database"""
+        if migrate_database(app):
+            logger.info("✅ Database initialized")
+        else:
+            logger.error("❌ Database initialization failed")
+    
+    @app.cli.command()
+    def create_admin():
+        """Create super admin user"""
+        from models import User, Tenant, UserRole
+        from werkzeug.security import generate_password_hash
+        
+        with app.app_context():
+            try:
+                # Get or create tenant
+                tenant = Tenant.query.filter_by(code='DEFAULT').first()
+                if not tenant:
+                    tenant = Tenant(
+                        code='DEFAULT',
+                        name='Default Organization',
+                        status='active'
+                    )
+                    db.session.add(tenant)
+                    db.session.flush()
+                
+                # Check if admin exists
+                if User.query.filter_by(email='admin@healthcare.com').first():
+                    logger.warning("⚠️  Admin already exists")
+                    return
+                
+                # Create admin
+                admin = User(
+                    tenant_id=tenant.id,
+                    email='admin@healthcare.com',
+                    password_hash=generate_password_hash('admin123'),
+                    role=UserRole.SUPER_ADMIN,
+                    is_active=True,
+                    full_name='Super Administrator'
+                )
+                db.session.add(admin)
+                db.session.commit()
+                
+                logger.info("✅ Admin created: admin@healthcare.com / admin123")
+                
+            except Exception as e:
+                db.session.rollback()
+                logger.error(f"❌ Failed to create admin: {e}")
+
+# =====================================================================
+# CREATE APP INSTANCE
+# =====================================================================
+
+app = create_app(os.environ.get('FLASK_ENV', 'development'))
+register_cli_commands(app)
+
+# =====================================================================
+# MAIN ENTRY POINT
+# =====================================================================
+
+if __name__ == '__main__':
+    print("""
+    ╔═══════════════════════════════════════════════════════════════╗
+    ║      🏥 HEALTHCARE PLATFORM API - REST API BACKEND          ║
+    ║                                                               ║
+    ║      Backend for React + Vite Frontend                       ║
+    ║      JWT Authentication | Multi-tenant | PostgreSQL          ║
+    ╚═══════════════════════════════════════════════════════════════╝
+    """)
+    
+    print("📊 API FEATURES:")
+    print("   ✅ RESTful API Design")
+    print("   ✅ JWT Authentication")
+    print("   ✅ Role-based Access Control")
+    print("   ✅ Multi-tenant Support")
+    print("   ✅ CORS Enabled for React")
+    print("   ✅ PostgreSQL 16")
+    print("   ✅ Comprehensive Logging")
+    print()
+    
+    print("🔗 API ENDPOINTS:")
+    print("   🌐 Base URL: http://localhost:8000")
+    print("   📱 Health Check: http://localhost:8000/api/health")
+    print("   🔐 Auth: http://localhost:8000/api/auth/login")
+    print("   🏥 Facilities: http://localhost:8000/api/facilities")
+    print("   👥 Patients: http://localhost:8000/api/patients")
+    print("   💳 Billing: http://localhost:8000/api/billing")
+    print("   📊 Analytics: http://localhost:8000/api/analytics")
+    print()
+    
+    print("🎨 FRONTEND:")
+    print("   React + Vite: http://localhost:5173")
+    print("   (Run separately: npm run dev)")
+    print()
+    
+    print("👤 DEFAULT CREDENTIALS:")
+    print("   Email: admin@healthcare.com")
+    print("   Password: admin123")
+    print()
+    
+    print("💡 CLI COMMANDS:")
+    print("   flask init-db       # Initialize database")
+    print("   flask create-admin  # Create admin user")
+    print()
+    
+    print("🚀 Starting API Server on http://localhost:8000")
+    print()
+    
+    app.run(debug=True, host='0.0.0.0', port=8000)
